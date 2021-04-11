@@ -8,8 +8,7 @@ defmodule ExElection.Application do
   @impl true
   def start(_type, _args) do
     children = [
-      {Registry, keys: :duplicate, name: Registry.Members},
-      {Registry, keys: :unique, name: Registry.Processes}
+      {Registry, keys: :unique, name: GroupMembers}
       # Starts a worker by calling: ExElection.Worker.start_link(arg)
       # {ExElection.Worker, arg}
     ]
