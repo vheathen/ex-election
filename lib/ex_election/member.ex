@@ -50,6 +50,9 @@ defmodule ExElection.Member do
               member_refs: %{reference() => Member.member_reference()},
               leader_watchdog: reference(),
               group_update_timer: reference(),
+
+              # only for process state inspection,
+              # it updates when a group member receives a message with new group info
               updated_at: DateTime.t()
             }
 
@@ -73,9 +76,10 @@ defmodule ExElection.Member do
   @spec name(id :: non_neg_integer()) :: member_reference()
   def name(id), do: {:via, Registry, {GroupMembers, id}}
 
-  @spec inspect_state(member :: Member.member_reference()) :: State.t()
+  @spec inspect_state(member :: member_reference()) :: State.t()
   def inspect_state(member), do: GenServer.call(member, :return_state)
 
+  @spec clear_members(member :: member_reference()) :: :ok
   def clear_members(member), do: GenServer.call(member, :clear_members)
 
   @spec inspect_registry :: list({non_neg_integer(), pid()})
@@ -159,29 +163,18 @@ defmodule ExElection.Member do
   def handle_call(:return_state, _from, state), do: {:reply, state, state}
   def handle_call(:clear_members, _from, state), do: {:reply, :ok, %{state | members: []}}
 
-  def handle_call(
-        :get_group_state,
-        _from,
-        %State{self: self, leader: leader, members: members} = state
-      ),
-      do: {:reply, %Message{leader: leader, members: members, from: self}, state}
+  def handle_call(:get_group_state, _from, %State{} = state),
+    do: {:reply, build_message(state), state}
 
-  def handle_call(
-        :new_member_joined,
-        {from_pid, _},
-        %State{self: self, leader: leader, members: members} = state
-      ) do
-    members = (from_pid in members && members) || [from_pid | members]
-
-    {
+  def handle_call(:new_member_joined, {from_pid, _}, %State{} = state),
+    do: {
       :reply,
-      %Message{leader: leader, members: members, from: self},
+      build_message(state),
       state
       |> demonitor_members()
-      |> Map.put(:members, members)
+      |> maybe_add_to_members(from_pid)
       |> monitor_members()
     }
-  end
 
   @impl true
   def handle_cast(
@@ -204,8 +197,8 @@ defmodule ExElection.Member do
   def handle_info(:leader_watchdog_timeout, %State{} = state),
     do: {
       :noreply,
-      %{state | leader: nil, previous_leader: state.leader},
-      {:continue, :find_group_state}
+      %{state | leader: state.self, previous_leader: state.leader},
+      {:continue, :handle_state_changes}
     }
 
   def handle_info(:notify_group_members, %State{leader: %{ref: leader}, members: members} = state) do
@@ -306,10 +299,7 @@ defmodule ExElection.Member do
     Logger.debug("#{state.self.id} got update from #{from.id}")
 
     state
-    |> Map.put(
-      :members,
-      (self() in members && members) || [self() | members]
-    )
+    |> maybe_add_to_members(from.ref, members)
     |> update_timestamp()
   end
 
@@ -321,10 +311,10 @@ defmodule ExElection.Member do
 
     %{
       state
-      | members: (self() in members && members) || [self() | members],
-        leader: leader,
+      | leader: leader,
         previous_leader: previous_leader
     }
+    |> maybe_add_to_members(from.ref, members)
     |> update_timestamp()
   end
 
@@ -365,10 +355,19 @@ defmodule ExElection.Member do
     state
   end
 
-  defp notify_group_member(member_ref, %State{self: self, leader: leader, members: members}) do
-    GenServer.cast(
-      member_ref,
-      {:group_state_updated, %Message{leader: leader, members: members, from: self}}
-    )
-  end
+  defp notify_group_member(member_ref, %State{} = state),
+    do: GenServer.cast(member_ref, {:group_state_updated, build_message(state)})
+
+  defp maybe_add_to_members(state, member, members \\ nil)
+
+  defp maybe_add_to_members(%State{members: members} = state, member, nil),
+    do: %{state | members: rebuild_members(members, member)}
+
+  defp maybe_add_to_members(%State{} = state, member, members) when is_list(members),
+    do: %{state | members: rebuild_members(members, member)}
+
+  defp rebuild_members(members, member), do: (member in members && members) || [member | members]
+
+  defp build_message(%State{self: self, leader: leader, members: members}),
+    do: %Message{leader: leader, members: members, from: self}
 end
