@@ -96,10 +96,13 @@ defmodule ExElection.Member do
 
   @impl true
   def handle_continue(:find_group_state, %State{} = state) do
-    state
-    |> fetch_group_members_from_registry()
-    |> find_group_state()
-    |> then(&{:noreply, &1, {:continue, :handle_state_changes}})
+    {
+      :noreply,
+      state
+      |> fetch_group_members_from_registry()
+      |> find_group_state(),
+      {:continue, :handle_state_changes}
+    }
   end
 
   def handle_continue(:handle_state_changes, %State{self: self, leader: self} = state),
